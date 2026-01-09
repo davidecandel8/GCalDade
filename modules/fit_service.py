@@ -236,10 +236,15 @@ class GoogleFitService:
                         for item in v['mapVal']:
                             if item['key'] == 'calories': cal += item['value']['fpVal']
         water = 0
+        # Dataset 1 è l'idratazione (indice 1 nella request body)
         if len(d_nut) > 1 and d_nut[1].get('point'):
-             w_val = d_nut[1]['point'][0]['value']
-             water = w_val[0]['fpVal'] * 1000 if w_val else 0
-        return {"calories": cal, "water": water}
+             # FIX: Itera su tutti i punti (bicchieri d'acqua)
+             for p in d_nut[1]['point']:
+                 if p.get('value'):
+                     # L'acqua è in litri (fpVal), convertiamo in ml
+                     water += p['value'][0]['fpVal'] * 1000
+                     
+        return {"calories": cal, "water": int(water)}
 
     def _resolve_rhr(self, s, e, vitals, sleep):
         body = {"aggregateBy": [{"dataTypeName": "com.google.heart_rate.resting"}]}

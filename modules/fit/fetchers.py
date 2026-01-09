@@ -13,15 +13,18 @@ class FitFetcher:
             return {}
 
     def fetch_raw_sessions(self, start_ms, end_ms):
-        """Scarica e NORMALIZZA le sessioni (fix del crash end_ms)"""
         try:
+            # FIX: Usa utcfromtimestamp per evitare lo shift temporale errato
+            start_dt = datetime.utcfromtimestamp(start_ms/1000).isoformat() + 'Z'
+            end_dt = datetime.utcfromtimestamp(end_ms/1000).isoformat() + 'Z'
+            
             response = self.service.users().sessions().list(
                 userId='me', 
-                startTime=datetime.fromtimestamp(start_ms/1000).isoformat() + 'Z',
-                endTime=datetime.fromtimestamp(end_ms/1000).isoformat() + 'Z',
+                startTime=start_dt,  # Usa le variabili corrette
+                endTime=end_dt,
                 includeDeleted=False
             ).execute()
-            
+
             raw_list = response.get('session', [])
             cleaned_list = []
             
