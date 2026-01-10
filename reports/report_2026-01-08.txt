@@ -1,0 +1,46 @@
+========================================
+📅 REPORT GIORNALIERO: 2026-01-08
+========================================
+
+🏃‍♂️ ATTIVITÀ FISICA
+   • Passi: 9900 
+   • Distanza: 7221 m
+   • Calorie Bruciate: 2435 kcal
+   • Punti Cardio: 172 
+   • Minuti Attivi: 146 min
+   • Piani Saliti: 0 
+   • Sessioni Sportive:
+     - 20:18: Calcio (103 min)
+
+😴 SONNO & RECUPERO
+   • Totale Sonno: 458 min (7.6 ore)
+   • Punteggio Sonno: 96 /100
+   • Energy Score: 100 /100
+   • Fasi del Sonno:
+     - Sveglio: 16 min
+     - REM: 126 min
+     - Leggero: 243 min
+     - Profondo: 88 min
+
+❤️ PARAMETRI VITALI
+   • Battito a Riposo (RHR): 45 bpm
+   • Battito Medio: 68 bpm
+   • Battito Max: 174 bpm
+   • SpO2 Media: 97 %
+   • Pressione: N/D/N/D mmHg
+   • Glicemia Media: N/D
+
+⚖️ COMPOSIZIONE CORPOREA
+   • Peso: 73.01990897818423 kg
+   • BMI (IMC): 22.8 
+   • Massa Grassa: 15.37 kg (21.049442534689398 %)
+   • Massa Muscolare (SMM): 31.13 kg
+   • Acqua Corporea: 42.08 kg (57.63 %)
+   • Metabolismo Basale (BMR): 1733 kcal
+
+🍎 NUTRIZIONE
+   • Calorie Assunte: 0 kcal
+   • Acqua Bevuta: 0 ml
+
+----------------------------------------
+Generato il: 2026-01-10 18:26:21

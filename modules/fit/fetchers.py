@@ -51,12 +51,6 @@ class FitFetcher:
                     "end_fmt": e_fmt,
                     "duration": duration_min
                 })
-
-            if not cleaned_list:
-                print(f"   [DEBUG SONNO] Nessuna sessione trovata tra {start_dt} e {end_dt}")
-            else:
-                for s in cleaned_list:
-                    print(f"   [DEBUG SONNO] Trovata: {s['name']} | Type: {s['activity_type']} | Dur: {s['duration']} min")
             
             return cleaned_list
         except Exception as e: 

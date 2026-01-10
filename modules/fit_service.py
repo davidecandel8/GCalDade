@@ -48,6 +48,7 @@ class GoogleFitService:
         rhr = self._resolve_rhr(start_ms, end_ms, vitals, sleep)
         act_hr = self.processor.calculate_active_hr(vitals['hr_samples'], sleep)
         
+        # Energy Score
         sleep_hours_for_calc = sleep['total_minutes'] / 60.0
         en_score = self.processor.calculate_energy_score({"total_hours": sleep_hours_for_calc}, core['steps'], rhr)
 
@@ -82,11 +83,10 @@ class GoogleFitService:
             "health_blood_pressure_dia": medical['dia'],
             "health_blood_glucose_avg": medical['glucose'],
             
-            # Vitali Notturni
+            # Vitali Notturni (Saranno NULL se il dato manca, ed è corretto)
             "health_skin_temp_avg": night_vitals['skin_temp'],
             "health_respiratory_rate_avg": night_vitals['resp_rate'],
 
-            # Sonno Dettagliato
             "health_sleep_minutes": sleep['total_minutes'],
             "health_sleep_awake_minutes": int(sleep['stages_min']['awake']),
             "health_sleep_light_minutes": int(sleep['stages_min']['light']),
@@ -163,7 +163,6 @@ class GoogleFitService:
 
         if weight:
             if height_m: bmi = round(weight / (height_m * height_m), 1)
-            
             height_cm = height_m * 100; age = 24 
             bmr = int((10 * weight) + (6.25 * height_cm) - (5 * age) + 5)
 
@@ -203,7 +202,6 @@ class GoogleFitService:
         for sess in sleeps:
             body = {"aggregateBy": [{"dataTypeName": "com.google.sleep.segment"}], "startTimeMillis": sess['start_ms'], "endTimeMillis": sess['end_ms']}
             
-            # BUG FIX: Qui prima passavo (0,0,body), ora passo i tempi corretti della sessione!
             r = self.fetcher.fetch_aggregate(sess['start_ms'], sess['end_ms'], body)
             
             sess_minutes = 0
@@ -264,9 +262,6 @@ class GoogleFitService:
             if r.get('bucket'):
                 ds = r['bucket'][0].get('dataset', [])
                 
-                # Check Debug se i dati ci sono ma sono vuoti
-                # print(f"DEBUG NIGHT VITALS: {ds}") 
-                
                 # Temp
                 if len(ds) > 0 and ds[0].get('point'):
                     vals = [p['value'][0]['fpVal'] for p in ds[0]['point']]
@@ -276,9 +271,9 @@ class GoogleFitService:
                 if len(ds) > 1 and ds[1].get('point'):
                     vals = [p['value'][0]['fpVal'] for p in ds[1]['point']]
                     if vals: resp_rate_avg = round(sum(vals)/len(vals), 1)
-                    
-        except Exception as ex:
-            print(f"   [WARN] Night Vitals Error (Check Permissions!): {ex}")
+        except:
+            # Fallimento silenzioso se i dati mancano
+            pass
 
         return {"skin_temp": skin_temp_avg, "resp_rate": resp_rate_avg}
 
