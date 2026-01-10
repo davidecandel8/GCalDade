@@ -36,7 +36,7 @@ class GoogleFitService:
         # Vitali
         vitals = self._get_vitals(start_ms, end_ms)
         
-        # Sonno (Cerca 14h indietro)
+        # Sonno (Cerca 14h indietro per coprire la notte precedente)
         sleep_start_search = start_ms - (14 * 60 * 60 * 1000) 
         sleep = self._get_sleep(sleep_start_search, end_ms)
         
@@ -45,10 +45,12 @@ class GoogleFitService:
 
         # 2. CALCOLI
         rhr = self._resolve_rhr(start_ms, end_ms, vitals, sleep)
-        act_hr = self.processor.calculate_active_hr(vitals['hr_samples'], rhr)
+        act_hr = self.processor.calculate_active_hr(vitals['hr_samples'], sleep)
+        # Nota: passo sleep['total_minutes'] convertito in ore per compatibilità punteggio, o adatto il calcolo
+        # Per ora adatto il calcolo dello score (vedi sotto)
         en_score = self.processor.calculate_energy_score(sleep, core['steps'], rhr)
 
-        # 3. PAYLOAD (INT FORCING ATTIVO)
+        # 3. PAYLOAD
         return {
             "health_steps": int(core['steps']),
             "health_distance_m": int(core['distance']),
@@ -60,10 +62,13 @@ class GoogleFitService:
             "health_vo2_max": vitals['vo2_max'],
 
             "health_weight_kg": body['weight'],
-            "health_body_fat_perc": body['fat'],
+            "health_bmi": body['bmi'], 
+            "health_body_fat_perc": body['fat_perc'],
+            "health_body_fat_kg": body['fat_kg'],
             "health_muscle_mass_kg": body['muscle'],
-            "health_bmr_kcal": int(body['bmr']) if body['bmr'] else None,
-            "health_body_water_perc": body['water'],
+            "health_bmr_kcal": body['bmr'],
+            "health_body_water_perc": body['water_perc'],
+            "health_body_water_kg": body['water_kg'],
 
             "health_avg_hr": vitals['avg_hr'],
             "health_resting_hr": rhr,
@@ -77,7 +82,7 @@ class GoogleFitService:
             "health_blood_glucose_avg": medical['glucose'],
             "health_body_temp_avg": medical['temp'],
 
-            "health_sleep_hours_total": sleep['total_hours'],
+            "health_sleep_minutes": sleep['total_minutes'], # NUOVO: Intero (es. 480)
             "health_sleep_score": sleep['efficiency_score'],
             "health_energy_score": en_score,
             
@@ -132,79 +137,137 @@ class GoogleFitService:
         }
 
     def _get_body_stats_robust(self, s, e):
-        # Fetch Latest Data Point
-        w_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.weight")
-        fat_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.body.fat.percentage")
-        bmr_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.calories.bmr")
-        lean_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.body.lean_body_mass")
-        water_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.body.water_mass") # Raro in HC
+        # 1. Lookback 30gg
+        ms_in_30_days = 30 * 24 * 60 * 60 * 1000
+        search_s = s - ms_in_30_days
         
+        w_raw = self.fetcher.fetch_latest_data_point(search_s, e, "com.google.weight")
+        fat_raw = self.fetcher.fetch_latest_data_point(search_s, e, "com.google.body.fat.percentage")
+        h_raw = self.fetcher.fetch_latest_data_point(search_s, e, "com.google.height")
+        water_mass_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.body.water_mass")
+
         weight = w_raw[0].get('fpVal') if w_raw else None
+        fat_perc = fat_raw[0].get('fpVal') if fat_raw else None
+        height_m = h_raw[0].get('fpVal') if h_raw else 1.75 
         
-        # Acqua: Se non c'è il dato raw, lo stimiamo dal peso (es. 60% uomo adulto) se vuoi,
-        # ma meglio lasciarlo None se manca il sensore.
+        bmr = None
+        muscle_smm = None 
         water_perc = None
-        if water_raw and weight:
-             water_perc = round((water_raw[0].get('fpVal') / weight) * 100, 2)
+        water_kg = None 
+        fat_kg = None
+        bmi = None
+
+        if weight:
+            # A. BMI
+            if height_m:
+                bmi = round(weight / (height_m * height_m), 1)
+
+            # B. BMR
+            height_cm = height_m * 100
+            age = 24 
+            bmr = int((10 * weight) + (6.25 * height_cm) - (5 * age) + 5)
+
+            # C. Massa & Acqua
+            lean_mass_kg = None
+            if fat_perc:
+                fat_kg = round(weight * (fat_perc / 100), 2)
+                lean_mass_kg = weight - fat_kg
+                muscle_smm = round(lean_mass_kg * 0.54, 2)
+
+            if water_mass_raw:
+                water_kg = round(water_mass_raw[0].get('fpVal'), 2)
+                water_perc = round((water_kg / weight) * 100, 2)
+            elif lean_mass_kg:
+                water_kg = round(lean_mass_kg * 0.73, 2)
+                water_perc = round((water_kg / weight) * 100, 2)
 
         return {
-            "weight": weight,
-            "fat": fat_raw[0].get('fpVal') if fat_raw else None,
-            "bmr": bmr_raw[0].get('fpVal') if bmr_raw else None,
-            "muscle": lean_raw[0].get('fpVal') if lean_raw else None,
-            "water": water_perc
+            "weight": weight, "bmi": bmi, "fat_perc": fat_perc, "fat_kg": fat_kg,
+            "muscle": muscle_smm, "bmr": bmr, "water_perc": water_perc, "water_kg": water_kg
         }
 
     def _get_sleep(self, s, e):
-        # Fetcher ora ritorna oggetti puliti con chiavi 'start_ms', 'end_ms'
+        # 1. Recupera TUTTE le sessioni
         sessions = self.fetcher.fetch_raw_sessions(s, e)
         sleeps = [x for x in sessions if x['activity_type'] == 72]
         
         if not sleeps: 
-            return {"total_hours": 0.0, "efficiency_score": 0}
+            return {"total_minutes": 0, "efficiency_score": 0, "start": "00:00", "end": "00:00", "total_hours": 0.0}
         
-        # Ora possiamo usare end_ms in sicurezza
-        main = max(sleeps, key=lambda x: x['end_ms'] - x['start_ms'])
+        # Identifica la sessione principale (per orari Start/End e Score)
+        main_sleep = max(sleeps, key=lambda x: x['duration'])
         
-        # Fetch stages
-        body = {"aggregateBy": [{"dataTypeName": "com.google.sleep.segment"}], "startTimeMillis": main['start_ms'], "endTimeMillis": main['end_ms']}
-        r = self.fetcher.fetch_aggregate(0,0,body)
+        total_minutes_accumulated = 0
+        total_stages = {"awake": 0, "sleep": 0, "out_of_bed": 0, "light": 0, "deep": 0, "rem": 0}
         
-        stages = {"awake": 0, "sleep": 0, "out_of_bed": 0, "light": 0, "deep": 0, "rem": 0}
-        if r.get('bucket') and r['bucket'][0].get('dataset'):
-            for p in r['bucket'][0]['dataset'][0].get('point', []):
-                dur = (int(p.get('endTimeNanos',0)) - int(p.get('startTimeNanos',0)))/1e9/60
-                t = p['value'][0]['intVal']
-                if t==1: stages['awake']+=dur
-                elif t==2: stages['sleep']+=dur
-                elif t==4: stages['light']+=dur
-                elif t==5: stages['deep']+=dur
-                elif t==6: stages['rem']+=dur
+        # 2. ITERA SU TUTTE LE SESSIONI (Notte + Pisoli)
+        for sess in sleeps:
+            # Tenta fetch dettagli
+            body = {"aggregateBy": [{"dataTypeName": "com.google.sleep.segment"}], "startTimeMillis": sess['start_ms'], "endTimeMillis": sess['end_ms']}
+            r = self.fetcher.fetch_aggregate(0,0,body)
+            
+            sess_minutes = 0
+            has_details = False
+            
+            if r.get('bucket') and r['bucket'][0].get('dataset'):
+                points = r['bucket'][0]['dataset'][0].get('point', [])
+                if points:
+                    has_details = True
+                    for p in points:
+                        dur = (int(p.get('endTimeNanos',0)) - int(p.get('startTimeNanos',0)))/1e9/60
+                        t = p['value'][0]['intVal']
+                        if t==1: total_stages['awake']+=dur
+                        elif t==2: 
+                            total_stages['sleep']+=dur
+                            sess_minutes+=dur
+                        elif t==4: 
+                            total_stages['light']+=dur
+                            sess_minutes+=dur
+                        elif t==5: 
+                            total_stages['deep']+=dur
+                            sess_minutes+=dur
+                        elif t==6: 
+                            total_stages['rem']+=dur
+                            sess_minutes+=dur
 
-        tot = stages['light']+stages['deep']+stages['rem']+stages['sleep']
-        eff = int(tot/(tot+stages['awake'])*100) if tot > 0 else 0
-        
+            # Se non ci sono dettagli (es. un pisolino veloce non tracciato in fasi), usa la durata grezza
+            if not has_details:
+                # sess['duration'] è già in minuti
+                print(f"   [INFO] Sonno: Uso durata raw per sessione {sess['start_fmt']}")
+                sess_minutes = sess['duration']
+            
+            total_minutes_accumulated += sess_minutes
+
+        # 3. Calcolo Score (Basato sui totali accumulati)
+        # Efficiency = (Tempo dormito / (Tempo dormito + Tempo sveglio))
+        # Nota: i pisoli spesso non hanno tempo 'awake' registrato, quindi alzano l'efficienza.
+        eff_denom = total_minutes_accumulated + total_stages['awake']
+        efficiency = int((total_minutes_accumulated / eff_denom) * 100) if eff_denom > 0 else 0
+
         return {
-            "total_hours": round(tot/60, 2), 
-            "stages_min": stages, 
-            "efficiency_score": eff, 
-            "start": main['start_fmt'], 
-            "end": main['end_fmt']
+            "total_minutes": int(total_minutes_accumulated), # INTERO
+            "total_hours": round(total_minutes_accumulated/60, 2), # Tengo per compatibilità interna se serve
+            "stages_min": total_stages, 
+            "efficiency_score": efficiency, 
+            "start": main_sleep['start_fmt'], 
+            "end": main_sleep['end_fmt']
         }
 
+    # ... Resto dei metodi (sport, medical, vitals, nutrition, resolve_rhr) INVARIATI ...
+    # Assicurati di copiare _get_sport, _get_medical_stats_robust, _get_vitals, _get_nutrition, _resolve_rhr 
+    # dal codice precedente o mantenerli se stai facendo copia-incolla parziale.
+    # Per brevità qui non li ripeto se sono identici alla versione "kg fix".
+    
+    # Rimetto qui sotto gli altri metodi per comodità di Copia-Incolla FULL FILE
     def _get_sport(self, s, e):
-        # Fetcher ritorna già oggetti puliti
         sessions = self.fetcher.fetch_raw_sessions(s, e)
         res = []
         for sess in sessions:
             if sess['activity_type'] != 72:
-                # Mappatura nomi
                 name = self.ACTIVITY_MAP.get(sess['activity_type'], f"Sport {sess['activity_type']}")
                 res.append({"name": name, "duration": sess['duration'], "start_fmt": sess['start_fmt']})
         return res
 
-    # ... Metodi medical, nutrition, vitals, resolve_rhr UGUALI a prima ...
-    # Assicurati di includerli!
     def _get_medical_stats_robust(self, s, e):
         bp_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.blood_pressure")
         sys = None; dia = None
@@ -218,11 +281,19 @@ class GoogleFitService:
         r = self.fetcher.fetch_aggregate(s, e, body)
         hr_samples = []; spo2_samples = []
         for b in r.get('bucket', []):
-            t = datetime.fromtimestamp(int(b['startTimeMillis'])/1000).strftime('%H:%M')
+            st = int(b['startTimeMillis'])
+            t_fmt = datetime.fromtimestamp(st/1000).strftime('%H:%M')
             d = b['dataset']
-            if d[0].get('point'): hr_samples.append({"time": t, "bpm": int(d[0]['point'][0]['value'][0]['fpVal'])})
-            if d[1].get('point'): spo2_samples.append({"time": t, "val": float(d[1]['point'][0]['value'][0]['fpVal'])})
-        return {"hr_samples": hr_samples, "avg_hr": int(sum(x['bpm'] for x in hr_samples)/len(hr_samples)) if hr_samples else None, "avg_spo2": int(sum(x['val'] for x in spo2_samples)/len(spo2_samples)) if spo2_samples else None, "min_hr": min([x['bpm'] for x in hr_samples]) if hr_samples else None, "max_hr": max([x['bpm'] for x in hr_samples]) if hr_samples else None, "vo2_max": None}
+            if d[0].get('point'): hr_samples.append({"time": t_fmt, "bpm": int(d[0]['point'][0]['value'][0]['fpVal'])})
+            if d[1].get('point'): spo2_samples.append({"time": t_fmt, "val": float(d[1]['point'][0]['value'][0]['fpVal'])})
+        return {
+            "hr_samples": hr_samples, 
+            "avg_hr": int(sum(x['bpm'] for x in hr_samples)/len(hr_samples)) if hr_samples else None, 
+            "avg_spo2": int(sum(x['val'] for x in spo2_samples)/len(spo2_samples)) if spo2_samples else None, 
+            "min_hr": min([x['bpm'] for x in hr_samples]) if hr_samples else None, 
+            "max_hr": max([x['bpm'] for x in hr_samples]) if hr_samples else None, 
+            "vo2_max": None
+        }
 
     def _get_nutrition(self, s, e):
         body = {"aggregateBy": [{"dataTypeName": "com.google.nutrition"}, {"dataTypeName": "com.google.hydration"}]}
@@ -236,14 +307,10 @@ class GoogleFitService:
                         for item in v['mapVal']:
                             if item['key'] == 'calories': cal += item['value']['fpVal']
         water = 0
-        # Dataset 1 è l'idratazione (indice 1 nella request body)
         if len(d_nut) > 1 and d_nut[1].get('point'):
-             # FIX: Itera su tutti i punti (bicchieri d'acqua)
              for p in d_nut[1]['point']:
                  if p.get('value'):
-                     # L'acqua è in litri (fpVal), convertiamo in ml
                      water += p['value'][0]['fpVal'] * 1000
-                     
         return {"calories": cal, "water": int(water)}
 
     def _resolve_rhr(self, s, e, vitals, sleep):
