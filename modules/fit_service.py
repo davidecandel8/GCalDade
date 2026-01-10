@@ -29,26 +29,27 @@ class GoogleFitService:
         watch_id = self.fetcher.find_step_source()
         core = self._get_core_stats(start_ms, end_ms, watch_id)
         
-        # Body & Medical
         body = self._get_body_stats_robust(start_ms, end_ms)
         medical = self._get_medical_stats_robust(start_ms, end_ms) 
-        
-        # Vitali
         vitals = self._get_vitals(start_ms, end_ms)
         
-        # Sonno (Cerca 14h indietro per coprire la notte precedente)
+        # Sonno (14h lookback)
         sleep_start_search = start_ms - (14 * 60 * 60 * 1000) 
         sleep = self._get_sleep(sleep_start_search, end_ms)
         
+        # Vitali Notturni
+        night_start = sleep_start_search if sleep['total_minutes'] > 0 else start_ms
+        night_vitals = self._get_night_vitals(night_start, end_ms)
+
         sport = self._get_sport(start_ms, end_ms)
         nutrition = self._get_nutrition(start_ms, end_ms)
 
         # 2. CALCOLI
         rhr = self._resolve_rhr(start_ms, end_ms, vitals, sleep)
         act_hr = self.processor.calculate_active_hr(vitals['hr_samples'], sleep)
-        # Nota: passo sleep['total_minutes'] convertito in ore per compatibilità punteggio, o adatto il calcolo
-        # Per ora adatto il calcolo dello score (vedi sotto)
-        en_score = self.processor.calculate_energy_score(sleep, core['steps'], rhr)
+        
+        sleep_hours_for_calc = sleep['total_minutes'] / 60.0
+        en_score = self.processor.calculate_energy_score({"total_hours": sleep_hours_for_calc}, core['steps'], rhr)
 
         # 3. PAYLOAD
         return {
@@ -80,9 +81,17 @@ class GoogleFitService:
             "health_blood_pressure_sys": medical['sys'],
             "health_blood_pressure_dia": medical['dia'],
             "health_blood_glucose_avg": medical['glucose'],
-            "health_body_temp_avg": medical['temp'],
+            
+            # Vitali Notturni
+            "health_skin_temp_avg": night_vitals['skin_temp'],
+            "health_respiratory_rate_avg": night_vitals['resp_rate'],
 
-            "health_sleep_minutes": sleep['total_minutes'], # NUOVO: Intero (es. 480)
+            # Sonno Dettagliato
+            "health_sleep_minutes": sleep['total_minutes'],
+            "health_sleep_awake_minutes": int(sleep['stages_min']['awake']),
+            "health_sleep_light_minutes": int(sleep['stages_min']['light']),
+            "health_sleep_deep_minutes": int(sleep['stages_min']['deep']),
+            "health_sleep_rem_minutes": int(sleep['stages_min']['rem']),
             "health_sleep_score": sleep['efficiency_score'],
             "health_energy_score": en_score,
             
@@ -92,6 +101,7 @@ class GoogleFitService:
             "raw_data": {
                 "fit_aggregates_dump": core,
                 "sleep_detailed": sleep,
+                "night_vitals_raw": night_vitals,
                 "sport_activities": sport,
                 "heart_rate_samples": vitals['hr_samples'],
                 "step_source_used": watch_id,
@@ -137,7 +147,6 @@ class GoogleFitService:
         }
 
     def _get_body_stats_robust(self, s, e):
-        # 1. Lookback 30gg
         ms_in_30_days = 30 * 24 * 60 * 60 * 1000
         search_s = s - ms_in_30_days
         
@@ -150,24 +159,14 @@ class GoogleFitService:
         fat_perc = fat_raw[0].get('fpVal') if fat_raw else None
         height_m = h_raw[0].get('fpVal') if h_raw else 1.75 
         
-        bmr = None
-        muscle_smm = None 
-        water_perc = None
-        water_kg = None 
-        fat_kg = None
-        bmi = None
+        bmr = None; muscle_smm = None; water_perc = None; water_kg = None; fat_kg = None; bmi = None
 
         if weight:
-            # A. BMI
-            if height_m:
-                bmi = round(weight / (height_m * height_m), 1)
-
-            # B. BMR
-            height_cm = height_m * 100
-            age = 24 
+            if height_m: bmi = round(weight / (height_m * height_m), 1)
+            
+            height_cm = height_m * 100; age = 24 
             bmr = int((10 * weight) + (6.25 * height_cm) - (5 * age) + 5)
 
-            # C. Massa & Acqua
             lean_mass_kg = None
             if fat_perc:
                 fat_kg = round(weight * (fat_perc / 100), 2)
@@ -187,24 +186,25 @@ class GoogleFitService:
         }
 
     def _get_sleep(self, s, e):
-        # 1. Recupera TUTTE le sessioni
         sessions = self.fetcher.fetch_raw_sessions(s, e)
         sleeps = [x for x in sessions if x['activity_type'] == 72]
         
         if not sleeps: 
-            return {"total_minutes": 0, "efficiency_score": 0, "start": "00:00", "end": "00:00", "total_hours": 0.0}
+            return {
+                "total_minutes": 0, "efficiency_score": 0, "start": "00:00", "end": "00:00", 
+                "stages_min": {"awake": 0, "sleep": 0, "out_of_bed": 0, "light": 0, "deep": 0, "rem": 0}
+            }
         
-        # Identifica la sessione principale (per orari Start/End e Score)
         main_sleep = max(sleeps, key=lambda x: x['duration'])
         
         total_minutes_accumulated = 0
         total_stages = {"awake": 0, "sleep": 0, "out_of_bed": 0, "light": 0, "deep": 0, "rem": 0}
         
-        # 2. ITERA SU TUTTE LE SESSIONI (Notte + Pisoli)
         for sess in sleeps:
-            # Tenta fetch dettagli
             body = {"aggregateBy": [{"dataTypeName": "com.google.sleep.segment"}], "startTimeMillis": sess['start_ms'], "endTimeMillis": sess['end_ms']}
-            r = self.fetcher.fetch_aggregate(0,0,body)
+            
+            # BUG FIX: Qui prima passavo (0,0,body), ora passo i tempi corretti della sessione!
+            r = self.fetcher.fetch_aggregate(sess['start_ms'], sess['end_ms'], body)
             
             sess_minutes = 0
             has_details = False
@@ -230,35 +230,58 @@ class GoogleFitService:
                             total_stages['rem']+=dur
                             sess_minutes+=dur
 
-            # Se non ci sono dettagli (es. un pisolino veloce non tracciato in fasi), usa la durata grezza
             if not has_details:
-                # sess['duration'] è già in minuti
-                print(f"   [INFO] Sonno: Uso durata raw per sessione {sess['start_fmt']}")
                 sess_minutes = sess['duration']
             
             total_minutes_accumulated += sess_minutes
 
-        # 3. Calcolo Score (Basato sui totali accumulati)
-        # Efficiency = (Tempo dormito / (Tempo dormito + Tempo sveglio))
-        # Nota: i pisoli spesso non hanno tempo 'awake' registrato, quindi alzano l'efficienza.
         eff_denom = total_minutes_accumulated + total_stages['awake']
         efficiency = int((total_minutes_accumulated / eff_denom) * 100) if eff_denom > 0 else 0
 
         return {
-            "total_minutes": int(total_minutes_accumulated), # INTERO
-            "total_hours": round(total_minutes_accumulated/60, 2), # Tengo per compatibilità interna se serve
+            "total_minutes": int(total_minutes_accumulated),
             "stages_min": total_stages, 
             "efficiency_score": efficiency, 
             "start": main_sleep['start_fmt'], 
             "end": main_sleep['end_fmt']
         }
 
-    # ... Resto dei metodi (sport, medical, vitals, nutrition, resolve_rhr) INVARIATI ...
-    # Assicurati di copiare _get_sport, _get_medical_stats_robust, _get_vitals, _get_nutrition, _resolve_rhr 
-    # dal codice precedente o mantenerli se stai facendo copia-incolla parziale.
-    # Per brevità qui non li ripeto se sono identici alla versione "kg fix".
-    
-    # Rimetto qui sotto gli altri metodi per comodità di Copia-Incolla FULL FILE
+    def _get_night_vitals(self, s, e):
+        body = {
+            "aggregateBy": [
+                {"dataTypeName": "com.google.body.temperature"}, 
+                {"dataTypeName": "com.google.respiratory_rate"} 
+            ],
+            "bucketByTime": {"durationMillis": e - s},
+            "startTimeMillis": s, "endTimeMillis": e
+        }
+        
+        skin_temp_avg = None
+        resp_rate_avg = None
+
+        try:
+            r = self.fetcher.fetch_aggregate(s, e, body)
+            if r.get('bucket'):
+                ds = r['bucket'][0].get('dataset', [])
+                
+                # Check Debug se i dati ci sono ma sono vuoti
+                # print(f"DEBUG NIGHT VITALS: {ds}") 
+                
+                # Temp
+                if len(ds) > 0 and ds[0].get('point'):
+                    vals = [p['value'][0]['fpVal'] for p in ds[0]['point']]
+                    if vals: skin_temp_avg = round(sum(vals)/len(vals), 2)
+                
+                # Resp Rate
+                if len(ds) > 1 and ds[1].get('point'):
+                    vals = [p['value'][0]['fpVal'] for p in ds[1]['point']]
+                    if vals: resp_rate_avg = round(sum(vals)/len(vals), 1)
+                    
+        except Exception as ex:
+            print(f"   [WARN] Night Vitals Error (Check Permissions!): {ex}")
+
+        return {"skin_temp": skin_temp_avg, "resp_rate": resp_rate_avg}
+
     def _get_sport(self, s, e):
         sessions = self.fetcher.fetch_raw_sessions(s, e)
         res = []
@@ -273,8 +296,8 @@ class GoogleFitService:
         sys = None; dia = None
         if bp_raw and len(bp_raw) >= 2: sys=bp_raw[0].get('fpVal'); dia=bp_raw[1].get('fpVal')
         gluc_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.blood_glucose")
-        temp_raw = self.fetcher.fetch_latest_data_point(s, e, "com.google.body.temperature")
-        return {"sys": sys, "dia": dia, "glucose": gluc_raw[0].get('fpVal') if gluc_raw else None, "temp": temp_raw[0].get('fpVal') if temp_raw else None}
+        
+        return {"sys": sys, "dia": dia, "glucose": gluc_raw[0].get('fpVal') if gluc_raw else None}
 
     def _get_vitals(self, s, e):
         body = {"aggregateBy": [{"dataTypeName": "com.google.heart_rate.bpm"}, {"dataTypeName": "com.google.oxygen_saturation"}], "bucketByTime": {"durationMillis": 300000}}

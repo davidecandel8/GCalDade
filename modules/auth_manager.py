@@ -9,14 +9,15 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 SCOPES = [
     'https://www.googleapis.com/auth/fitness.activity.read',
     'https://www.googleapis.com/auth/fitness.location.read',
-    'https://www.googleapis.com/auth/fitness.body.read',      # Peso, Grasso, Altezza
-    'https://www.googleapis.com/auth/fitness.nutrition.read', # Acqua, Cibo
+    'https://www.googleapis.com/auth/fitness.body.read',      
+    'https://www.googleapis.com/auth/fitness.nutrition.read',
     'https://www.googleapis.com/auth/fitness.sleep.read',
     'https://www.googleapis.com/auth/fitness.heart_rate.read',
     'https://www.googleapis.com/auth/fitness.blood_pressure.read',
     'https://www.googleapis.com/auth/fitness.blood_glucose.read',
     'https://www.googleapis.com/auth/fitness.oxygen_saturation.read',
-    'https://www.googleapis.com/auth/fitness.body_temperature.read', # Temp Cutanea/Corporea
+    'https://www.googleapis.com/auth/fitness.body_temperature.read',
+    'https://www.googleapis.com/auth/fitness.reproductive_health.read', # A volte serve per skin temp ciclo
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/youtube.readonly'
 ]
